@@ -1,0 +1,198 @@
+import requests, pandas as pd, json, datetime, logging , os
+from sqlalchemy import create_engine, text
+from logging.handlers import RotatingFileHandler
+
+ # logging file
+log_dir = 'logs'
+os.makedirs(log_dir, exist_ok=True)
+
+log_file = os.path.join(log_dir, 'etl.log')
+
+# handlers setting
+handler = RotatingFileHandler(
+    log_file,
+    maxBytes=1_000_000,
+    backupCount=10
+
+)
+
+# logging format
+formatter = logging.Formatter(
+    '%(asctime)s - %(levelname)s - %(name)s - %(message)s'
+)
+handler.setFormatter(formatter)
+
+# logger creation
+logger = logging.getLogger('ETLLogger')
+logger.setLevel(logging.INFO)
+logger.addHandler(handler)
+
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(formatter)
+logger.addHandler(console_handler)
+
+# engine creation
+engine = create_engine("postgresql+psycopg2://postgres:200208@localhost:5432/postgres")
+
+# API link
+base_url = "https://api.coingecko.com/api/v3"
+end = '/coins/markets'
+
+logger.debug('Asking for input')
+
+# users input
+while True:
+    try:
+        page = int(input('From which page should be the selection?: '))
+        break
+    except ValueError:
+        logger.error('Please enter the digit or num in the format intenger')
+coin_name = input('Enter the neccessary coins name, if you wont to get all - enter * : ').lower().split()
+
+logger.info('The data recieved, start getting API')
+
+                          # API get
+def get_crypto_data(): 
+    logger.info('Getting the data')       
+    url = f"{base_url}{end}"
+    params = {
+        'vs_currency': 'usd',
+        'order': 'market_cap_desc',
+        'per_page': 250,
+        'page': page
+    }
+    header = {"x-cg-demo-api-key": "CG-hrHDbFKJcyT32XYdqEZiVUZB"}
+    try:
+        response = requests.get(url, params=params, headers=header)
+        response.raise_for_status()
+    except requests.exceptions.HTTPError as e:
+        logger.critical(f'API getting ERROR: {e}')
+        return None
+    logger.info('Data has been successfully recieved')
+    return response.json()
+
+# transform to DataFrame
+file_api = get_crypto_data()
+logger.debug('start transforming API to DF')
+def api_to_df(api_json):
+    df = pd.DataFrame(api_json)
+    return df
+
+df = api_to_df(file_api)
+df = df.drop(
+    columns=['roi'],
+    errors='ignore')
+
+# selection the columns according to users filter
+def select_crypto_by_coin_symbol_name(df: pd.DataFrame, *args):
+    logger.debug('start the coins selection')
+    keys_name = []
+    wrong_args = []
+
+    if '*' in args:
+        logger.debug('finish without data changes')
+        return df
+
+    for arg in args:
+        if arg in df['symbol'].values:
+             keys_name.append(arg)
+        else:
+             wrong_args.append(arg)
+            
+    if not keys_name:
+        logger.error('You have wrotten the worng keys')
+        return None
+    if wrong_args:
+        logger.warning(f'There is some wrong keys: {wrong_args}, the keys {keys_name} is succesfully confirmed')
+    if keys_name:
+        logger.info('finish selection successfully')
+        return df[df['symbol'].isin(keys_name)]
+   
+        
+# transform to datatime
+logger.debug('transforming columns to data time')
+colums_transf_for_DT = ['ath_date', 'atl_date', 'last_updated']
+for col in colums_transf_for_DT:
+    if col in df.columns:
+        df[col] = pd.to_datetime(df[col], utc=True, errors='coerce')
+logger.debug('finsh transforming to data time')
+
+def Data_Quality_Check_is_not_null_and_negative(pd: pd.DataFrame, columns: list[str]):
+    logger.info('Start checking data quality')
+    logger.debug('Start checking data quality is not null')
+    choosen_col = df.columns.intersection(columns)
+    wrong_values_indexes = []
+    wrong_column_name = {}
+    right_val = []
+
+    
+    for colum in columns:
+        if colum not in df.columns:
+            wrong_column_name.append(colum)
+        else:
+            right_val.append(colum)
+           
+
+    if wrong_column_name:
+        logger.warning(f'Some of the name you have wortten are wrong: {wrong_column_name}')
+    if not right_val:
+        logger.error('There is no right name in parameters')
+               
+    for col in choosen_col:
+        mask = (df[col] < 0)
+        indexes = df.index[mask].tolist()
+
+        if indexes:
+            wrong_column_name[col] = indexes
+    if wrong_column_name:
+        logger.warning(f'There is some wrong data {wrong_column_name}. Would you like to continue?')
+        answ = input('Please answer in format yes or no: ')
+        if answ.lower() == 'no':
+            return True
+        else:
+            return False
+
+    logger.debug('The Data_Quality_Check_is_not_null_and_negative function has benn successfully finished')
+    
+    
+
+
+
+   
+def data_freshness_test(df: pd.DataFrame):
+    logger.debug('Start data frshness test')
+    now = pd.Timestamp.now(tz='UTC')
+    freshness_limit = pd.Timedelta(minutes=15)
+
+    date_existence_time = now - df['last_updated']
+
+    if (date_existence_time > freshness_limit).any():
+        logger.warning(f"Warning! The data is'not fresh, it's {date_existence_time}. Would you like to continue?")
+        answ = input('In format yes or no: ')
+        if answ.lower() == 'no':
+            return True
+        else:
+            return False
+int_float_columns = df.select_dtypes(include=['int','float']).columns.tolist()
+func_stop1 = False
+func_stop2 = False
+func_stop1 = Data_Quality_Check_is_not_null_and_negative(df, int_float_columns)
+func_stop2 = data_freshness_test(df)
+
+if func_stop1 is False and func_stop2 is False:
+    new_df = select_crypto_by_coin_symbol_name(df, *coin_name)
+    if new_df is not None:
+        new_df['UTC'] = pd.Timestamp.now(tz='UTC')
+
+    if new_df is not None:
+
+        new_df.to_sql(
+            'crypto',
+            con=engine,
+            if_exists='replace',
+            index=False
+        )
+    logger.info('The data have benn succesfully pushed to the database!')
+else:
+    logger.info('The function has been stoped becouse of the bad data quality')
