@@ -1,2 +1,12 @@
+.env
 .venv/
+venv/
+env/
+ENV/
+.log
+.vscode/
+.idea/
+Thumbs.db
 __pycache__/
+*.py[cod]
+*$py.class
