@@ -1,6 +1,9 @@
 import requests, pandas as pd, json, datetime, logging , os
 from sqlalchemy import create_engine, text
 from logging.handlers import RotatingFileHandler
+from dotenv import load_dotenv
+from pathlib import Path
+
 
  # logging file
 log_dir = 'logs'
@@ -32,10 +35,37 @@ console_handler.setLevel(logging.INFO)
 console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
 
-# engine creation
-engine = create_engine("postgresql+psycopg2://postgres:200208@localhost:5432/postgres")
+# .env way
+BASE_DIR = Path(__file__).resolve().parent
+
+env_path = BASE_DIR / '.env'
+
+if env_path.exists():
+    load_dotenv(dotenv_path=env_path)
+    logger.info(f'Load .env from {env_path}')
+else:
+    logger.critical(f'.env file is NOT FOUND at {env_path}')
+
+
+
+# load env data
+db_user = os.getenv('DB_USER', 'postgres')
+db_password = os.getenv('DB_PASSWORD')
+db_host = os.getenv('DB_HOST', 'localhost')
+raw_port = os.getenv('DB_PORT', '5432')
+db_port = int(raw_port.strip()) if raw_port and raw_port.strip() else 5432
+db_name = os.getenv('DB_NAME')
+
+# DATABASE URL CREATION
+
+DATABASE_URL = f'postgresql+psycopg2://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}'
+
+# CREATE ENGINE
+
+postgres_engine = create_engine(DATABASE_URL)
 
 # API link
+api_key = os.getenv('COINGECKO_API_KEY')
 base_url = "https://api.coingecko.com/api/v3"
 end = '/coins/markets'
 
@@ -62,7 +92,7 @@ def get_crypto_data():
         'per_page': 250,
         'page': page
     }
-    header = {"x-cg-demo-api-key": "CG-hrHDbFKJcyT32XYdqEZiVUZB"}
+    header = {"x-cg-demo-api-key": api_key}
     try:
         response = requests.get(url, params=params, headers=header)
         response.raise_for_status()
@@ -189,10 +219,11 @@ if func_stop1 is False and func_stop2 is False:
 
         new_df.to_sql(
             'crypto',
-            con=engine,
-            if_exists='replace',
+            con=postgres_engine,
+            if_exists='append',
             index=False
         )
     logger.info('The data have benn succesfully pushed to the database!')
 else:
     logger.info('The function has been stoped becouse of the bad data quality')
+
